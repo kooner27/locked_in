@@ -1,4 +1,3 @@
-// src/components/UploadFlashcards.jsx
 import React, { useState } from "react";
 
 export default function UploadFlashcards({ onUpload }) {
@@ -12,8 +11,7 @@ export default function UploadFlashcards({ onUpload }) {
    *   • file.webkitRelativePath (e.g. "FolderA/sub/file.csv") when picking a folder,
    *   • or file.name (e.g. "terms.csv") when picking individual file(s).
    *
-   * NOTE: We removed the use of Date.now() so that IDs are stable across
-   * identical re-uploads. Now: id = `${basePath}__${idx}`.
+   * NOTE: IDs are stable: `${basePath}__${idx}`.
    */
   function parseCsv(text, basePath) {
     return text
@@ -22,7 +20,7 @@ export default function UploadFlashcards({ onUpload }) {
       .map((line, idx) => {
         const [front, back] = line.split(",");
         return {
-          id: `${basePath}__${idx}`, // NO Date.now() → stable ID
+          id: `${basePath}__${idx}`, // stable ID
           front: front ? front.trim() : "",
           back: back ? back.trim() : "",
           path: basePath,
@@ -108,7 +106,7 @@ export default function UploadFlashcards({ onUpload }) {
     <div className="w-full max-w-2xl">
       <div className="bg-gray-800 p-8 rounded-xl shadow-xl">
         <h1 className="text-3xl font-bold mb-6 text-gray-100 text-center">
-          Flashcard Study
+          Locked In
         </h1>
 
         <p className="text-gray-400 mb-4 text-center">
@@ -163,6 +161,29 @@ export default function UploadFlashcards({ onUpload }) {
           Once you make a selection, we’ll parse all CSVs and automatically
           launch the study interface.
         </p>
+
+        {/* ====== Instructions Section ====== */}
+        <div className="mt-6 text-gray-400 text-sm text-center space-y-2">
+          <p>
+            After entering study mode, you’ll see three buttons in the
+            top‐right: &ldquo;<strong>💾 Save State</strong>&rdquo;, &ldquo;
+            <strong>🔄 Restore State</strong>&rdquo;, and &ldquo;
+            <strong>🗑️ Clear State</strong>&rdquo;.
+          </p>
+          <p>
+            • Click <strong>💾 Save State</strong> to save your progress in this
+            browser.
+          </p>
+          <p>
+            • Later, re‐upload the <strong>same</strong> CSV files or folder,
+            then click <strong>🔄 Restore State</strong> to pick up where you
+            left off.
+          </p>
+          <p>
+            • Click <strong>🗑️ Clear State</strong> to delete any saved progress
+            and start fresh.
+          </p>
+        </div>
       </div>
     </div>
   );
