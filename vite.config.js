@@ -4,5 +4,6 @@ import tailwindcss from "@tailwindcss/vite";
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: "/locked_in/",
   plugins: [react(), tailwindcss()],
 });
