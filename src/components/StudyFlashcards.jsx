@@ -172,6 +172,9 @@ export default function StudyFlashcards({ cards, onReset }) {
   const cardId = currentOrder[currentIndex];
   const currentCard = cardsForSession.find((c) => c.id === cardId) || {};
 
+  // ── Compute whether to show front or back ──
+  const showFront = frontFirst !== showBack;
+
   return (
     <div className="w-full max-w-5xl space-y-6 relative">
       {/* ── Row 1: Study scope dropdown ── */}
@@ -293,11 +296,7 @@ export default function StudyFlashcards({ cards, onReset }) {
           onClick={() => setShowBack((s) => !s)}
         >
           <span style={{ fontSize: `${fontSizePx}px` }}>
-            {showBack
-              ? currentCard.back
-              : frontFirst
-                ? currentCard.front
-                : currentCard.back}
+            {showFront ? currentCard.front : currentCard.back}
           </span>
         </div>
       </div>
@@ -381,7 +380,6 @@ export default function StudyFlashcards({ cards, onReset }) {
   }
 
   function toggleShuffle() {
-    const n = cardsForSession.length;
     if (!isShuffled) {
       const shuffled = shuffleArray(cardsForSession.map((c) => c.id));
       setCurrentOrder(shuffled);
