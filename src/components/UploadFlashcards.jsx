@@ -19,9 +19,11 @@ export default function UploadFlashcards({ onUpload }) {
       const ch = line[i];
 
       if (ch === '"') {
+        // If we're inside quotes and the next character is also a quote,
+        // treat it as an escaped quote.
         if (inQuotes && line[i + 1] === '"') {
-          cur += '"'; // escaped quote
-          i++; // skip the second "
+          cur += '"';
+          i++;
         } else {
           inQuotes = !inQuotes;
         }
@@ -46,27 +48,29 @@ export default function UploadFlashcards({ onUpload }) {
   };
 
   /* ────────────────────────────────────────────────────────── */
-  /* 2. parseCsv(text, basePath) → [{ id, front, back, path }] */
+  /* 2. parseCsv(text, basePath) → Array<{ id, path, rowIndex, front, back }> */
+  /*    Now we also keep rowIndex so we can sort later.           */
   /* ────────────────────────────────────────────────────────── */
   function parseCsv(text, basePath) {
     return text
       .trim()
-      .split(/\r?\n/) // handle \n or \r\n
+      .split(/\r?\n/) // handle Unix/macOS (\n) or Windows (\r\n)
       .map((raw, idx) => {
         const cells = splitCSVLine(raw);
-        if (cells.length < 2) return null; // skip any malformed line
+        if (cells.length < 2) return null; // skip malformed lines
 
         const front = stripOuterQuotes(cells[0]);
         const back = stripOuterQuotes(cells[1]);
 
-        return front && back
-          ? {
-              id: `${basePath}__${idx}`, // stable ID
-              front,
-              back,
-              path: basePath,
-            }
-          : null;
+        if (!front || !back) return null;
+
+        return {
+          id: `${basePath}__${idx}`, // stable ID
+          path: basePath, // used for sorting by filename
+          rowIndex: idx, // original line index
+          front,
+          back,
+        };
       })
       .filter(Boolean); // drop null entries
   }
@@ -79,61 +83,62 @@ export default function UploadFlashcards({ onUpload }) {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
 
-    // 1) keep only .csv files
+    // 1) Keep only “.csv”
     let csvFiles = files.filter((f) => f.name.toLowerCase().endsWith(".csv"));
     if (!csvFiles.length) {
       setError("No “.csv” files found in your selection.");
       return;
     }
 
-    // 2) sort in-place by “file path” (webkitRelativePath) or file.name
-    //    so we end up reading them alphabetically
+    // 2) Sort the FileList by alphabetical path (or name)
     csvFiles.sort((a, b) => {
       const pa = a.webkitRelativePath || a.name;
       const pb = b.webkitRelativePath || b.name;
-      return pa.localeCompare(pb);
+      return pa.localeCompare(pb, undefined, { sensitivity: "base" });
     });
 
     try {
-      // 3) Read & parse all CSVs in parallel—BUT because we sorted csvFiles above,
-      //    parseCsv(...) will be called in alphabetical order by path.
+      // 3) Read & parse all CSVs IN ORDER
       const allParsed = await Promise.all(
         csvFiles.map((file) => {
           return new Promise((resolve, reject) => {
             const reader = new FileReader();
-
             reader.onload = () => {
-              // If picked via folder, webkitRelativePath holds e.g. “FolderA/sub/file.csv”
-              // Otherwise, it’s just file.name
               const basePath = file.webkitRelativePath || file.name;
               resolve(parseCsv(reader.result, basePath));
             };
-
-            reader.onerror = () => {
+            reader.onerror = () =>
               reject(
                 new Error(
                   `Failed to read “${file.name}”: ${reader.error?.message || ""}`
                 )
               );
-            };
-
             reader.readAsText(file);
           });
         })
       );
 
-      // 4) Flatten into a single array of cards. Because csvFiles was sorted,
-      //    “allParsed” is in that same order, and within each file the lines
-      //    remain in file‐order.
+      // 4) Flatten
       const allCards = allParsed.flat();
+
       if (!allCards.length) {
         setError(
-          "All CSVs were empty or not recognisable as “term,definition” per line."
+          "All CSVs were empty or did not follow “term,definition” per line."
         );
         return;
       }
 
-      // 5) Finally, hand the sorted cards array off to StudyFlashcards
+      // 5) FINAL SORT: ensure global alphabetical by (path, rowIndex)
+      allCards.sort((a, b) => {
+        if (a.path === b.path) {
+          return a.rowIndex - b.rowIndex;
+        }
+        return a.path.localeCompare(b.path, undefined, {
+          sensitivity: "base",
+        });
+      });
+
+      // 6) Hand off to StudyFlashcards
       onUpload(allCards);
     } catch (err) {
       console.error(err);
@@ -157,9 +162,10 @@ export default function UploadFlashcards({ onUpload }) {
 
         <p className="text-gray-400 mb-4 text-center">
           You can upload either:
-          <br />• One or more <strong>individual CSV files</strong> (Select File
-          (s)), or
-          <br />• An entire <strong>folder</strong> of CSVs (nested allowed).
+          <br />• One or more <strong>individual CSV files</strong> (use “Select
+          File(s)”), or
+          <br />• An entire <strong>folder</strong> of CSVs (nested subfolders
+          allowed).
         </p>
 
         <div className="flex justify-center space-x-4">
@@ -198,8 +204,8 @@ export default function UploadFlashcards({ onUpload }) {
         )}
 
         <p className="text-gray-500 text-sm mt-6 text-center">
-          After selection, files are parsed and the study interface opens
-          automatically.
+          After you select a file or folder, we parse them in perfect
+          alphabetical order and launch study mode.
         </p>
       </div>
     </div>
