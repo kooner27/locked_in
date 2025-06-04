@@ -1,71 +1,112 @@
+/* eslint-disable react/prop-types */
 import React, { useState } from "react";
 
 export default function UploadFlashcards({ onUpload }) {
   const [error, setError] = useState("");
 
-  /**
-   * parseCsv(text, basePath) → Array<{ id, front, back, path }>
-   *
-   * Splits CSV text by newline; each line must be “term,definition”.
-   * basePath is either:
-   *   • file.webkitRelativePath (e.g. "FolderA/sub/file.csv") when picking a folder,
-   *   • or file.name (e.g. "terms.csv") when picking individual file(s).
-   *
-   * NOTE: IDs are stable: `${basePath}__${idx}`.
-   */
+  /* ────────────────────────────────────────────────────────── */
+  /* 1. splitCSVLine(line) → [field1, field2, …]               */
+  /*    Small RFC-4180 parser:                                  */
+  /*    • Comma outside quotes signals a new column             */
+  /*    • \"\" inside quotes resolves to one literal quote      */
+  /* ────────────────────────────────────────────────────────── */
+  function splitCSVLine(line) {
+    const fields = [];
+    let cur = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          cur += '"'; // escaped quote
+          i++; // skip the second "
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch === "," && !inQuotes) {
+        fields.push(cur);
+        cur = "";
+      } else {
+        cur += ch;
+      }
+    }
+    fields.push(cur);
+    return fields;
+  }
+
+  /* strip wrapper quotes + trim whitespace */
+  const stripOuterQuotes = (s) => {
+    let t = s.trim();
+    if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
+      t = t.slice(1, -1);
+    }
+    return t;
+  };
+
+  /* ────────────────────────────────────────────────────────── */
+  /* 2. parseCsv(text, basePath) → [{ id, front, back, path }] */
+  /* ────────────────────────────────────────────────────────── */
   function parseCsv(text, basePath) {
     return text
       .trim()
-      .split("\n")
-      .map((line, idx) => {
-        const [front, back] = line.split(",");
-        return {
-          id: `${basePath}__${idx}`, // stable ID
-          front: front ? front.trim() : "",
-          back: back ? back.trim() : "",
-          path: basePath,
-        };
+      .split(/\r?\n/) // handle \n or \r\n
+      .map((raw, idx) => {
+        const cells = splitCSVLine(raw);
+        if (cells.length < 2) return null; // skip any malformed line
+
+        const front = stripOuterQuotes(cells[0]);
+        const back = stripOuterQuotes(cells[1]);
+
+        return front && back
+          ? {
+              id: `${basePath}__${idx}`, // stable ID
+              front,
+              back,
+              path: basePath,
+            }
+          : null;
       })
-      .filter(({ front, back }) => front !== "" && back !== "");
+      .filter(Boolean); // drop null entries
   }
 
-  /**
-   * handleFiles(e)
-   *
-   * Called when the user picks either:
-   *   • “Select File(s)” → e.target.files is a FileList of chosen files,
-   *   • “Select Folder”   → e.target.files is every file under that folder (nested).
-   *
-   * We keep only .csv files, read each via FileReader, parse via parseCsv(...),
-   * flatten, then call onUpload(allCards).
-   */
+  /* ────────────────────────────────────────────────────────── */
+  /* 3. handleFiles(e): read each selected file, parse, upload */
+  /* ────────────────────────────────────────────────────────── */
   async function handleFiles(e) {
     setError("");
-    console.log("handleFiles triggered with", e.target.files);
-
     const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
+    if (!files.length) return;
 
-    // Filter for .csv only
-    const csvFiles = files.filter((f) => f.name.toLowerCase().endsWith(".csv"));
-    if (csvFiles.length === 0) {
+    // 1) keep only .csv files
+    let csvFiles = files.filter((f) => f.name.toLowerCase().endsWith(".csv"));
+    if (!csvFiles.length) {
       setError("No “.csv” files found in your selection.");
       return;
     }
 
+    // 2) sort in-place by “file path” (webkitRelativePath) or file.name
+    //    so we end up reading them alphabetically
+    csvFiles.sort((a, b) => {
+      const pa = a.webkitRelativePath || a.name;
+      const pb = b.webkitRelativePath || b.name;
+      return pa.localeCompare(pb);
+    });
+
     try {
-      // Read & parse all CSVs in parallel
+      // 3) Read & parse all CSVs in parallel—BUT because we sorted csvFiles above,
+      //    parseCsv(...) will be called in alphabetical order by path.
       const allParsed = await Promise.all(
         csvFiles.map((file) => {
           return new Promise((resolve, reject) => {
             const reader = new FileReader();
 
             reader.onload = () => {
-              // If picked via folder, webkitRelativePath holds something like "FolderA/sub/file.csv"
-              // Otherwise, webkitRelativePath is "", so fallback to file.name
+              // If picked via folder, webkitRelativePath holds e.g. “FolderA/sub/file.csv”
+              // Otherwise, it’s just file.name
               const basePath = file.webkitRelativePath || file.name;
-              const parsed = parseCsv(reader.result, basePath);
-              resolve(parsed);
+              resolve(parseCsv(reader.result, basePath));
             };
 
             reader.onerror = () => {
@@ -81,16 +122,18 @@ export default function UploadFlashcards({ onUpload }) {
         })
       );
 
-      // Flatten into a single array
+      // 4) Flatten into a single array of cards. Because csvFiles was sorted,
+      //    “allParsed” is in that same order, and within each file the lines
+      //    remain in file‐order.
       const allCards = allParsed.flat();
-      if (allCards.length === 0) {
+      if (!allCards.length) {
         setError(
-          "All CSVs were empty or not in “term,definition” format (one per line)."
+          "All CSVs were empty or not recognisable as “term,definition” per line."
         );
         return;
       }
 
-      // Pass parsed cards up
+      // 5) Finally, hand the sorted cards array off to StudyFlashcards
       onUpload(allCards);
     } catch (err) {
       console.error(err);
@@ -102,6 +145,9 @@ export default function UploadFlashcards({ onUpload }) {
     }
   }
 
+  /* ────────────────────────────────────────────────────────── */
+  /* 4. UI                                                     */
+  /* ────────────────────────────────────────────────────────── */
   return (
     <div className="w-full max-w-2xl">
       <div className="bg-gray-800 p-8 rounded-xl shadow-xl">
@@ -111,14 +157,13 @@ export default function UploadFlashcards({ onUpload }) {
 
         <p className="text-gray-400 mb-4 text-center">
           You can upload either:
-          <br />• One or more <strong>individual CSV files</strong> (pick via
-          Select File(s)), or
-          <br />• An entire <strong>folder</strong> of CSVs (nested subfolders
-          allowed).
+          <br />• One or more <strong>individual CSV files</strong> (Select File
+          (s)), or
+          <br />• An entire <strong>folder</strong> of CSVs (nested allowed).
         </p>
 
         <div className="flex justify-center space-x-4">
-          {/* ========== Select File(s) ========== */}
+          {/* Select File(s) */}
           <label className="relative cursor-pointer">
             <input
               type="file"
@@ -132,13 +177,8 @@ export default function UploadFlashcards({ onUpload }) {
             </span>
           </label>
 
-          {/* ========== Select Folder ========== */}
+          {/* Select Folder */}
           <label className="relative cursor-pointer">
-            {/*
-              In React/JSX, using `webkitdirectory=""` ensures React emits
-              `<input webkitdirectory>` in the final HTML. Browsers that
-              support folder selection (Chrome/Edge/Firefox) honor it.
-            */}
             <input
               type="file"
               webkitdirectory=""
@@ -158,32 +198,9 @@ export default function UploadFlashcards({ onUpload }) {
         )}
 
         <p className="text-gray-500 text-sm mt-6 text-center">
-          Once you make a selection, we’ll parse all CSVs and automatically
-          launch the study interface.
+          After selection, files are parsed and the study interface opens
+          automatically.
         </p>
-
-        {/* ====== Instructions Section ====== */}
-        <div className="mt-6 text-gray-400 text-sm text-center space-y-2">
-          <p>
-            After entering study mode, you’ll see three buttons in the
-            top‐right: &ldquo;<strong>💾 Save State</strong>&rdquo;, &ldquo;
-            <strong>🔄 Restore State</strong>&rdquo;, and &ldquo;
-            <strong>🗑️ Clear State</strong>&rdquo;.
-          </p>
-          <p>
-            • Click <strong>💾 Save State</strong> to save your progress in this
-            browser.
-          </p>
-          <p>
-            • Later, re‐upload the <strong>same</strong> CSV files or folder,
-            then click <strong>🔄 Restore State</strong> to pick up where you
-            left off.
-          </p>
-          <p>
-            • Click <strong>🗑️ Clear State</strong> to delete any saved progress
-            and start fresh.
-          </p>
-        </div>
       </div>
     </div>
   );
