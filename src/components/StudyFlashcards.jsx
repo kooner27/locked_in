@@ -15,7 +15,21 @@ function shuffleArray(arr) {
   return a;
 }
 
-export default function StudyFlashcards({ cards, onReset }) {
+/* ────────────────────────────────────────────────────────── */
+/* New in this file:                                          */
+/* - Replace localStorage “Save/Restore/Clear” with:           */
+/*     • 💾 Export State  → downloads state.json               */
+/*     • 🔄 Import State  → reads state.json (optional)        */
+/* - Accept `initialState` prop to auto-restore once if the    */
+/*   user imported a state.json on the landing page.           */
+/* - We keep your session/settings logic and comments intact.  */
+/* ────────────────────────────────────────────────────────── */
+
+export default function StudyFlashcards({
+  cards,
+  onReset,
+  initialState = null,
+}) {
   // ── cardsForSession: the actual subset we are studying ──
   const [cardsForSession, setCardsForSession] = useState(cards);
 
@@ -73,12 +87,42 @@ export default function StudyFlashcards({ cards, onReset }) {
     // keep fontSizeInput as-is
   }, [cards]);
 
+  /* ────────────────────────────────────────────────────────── */
+  /* New: One-shot auto-restore when `initialState` is provided */
+  /* (App passes this when the user imported state.json earlier)*/
+  /* ────────────────────────────────────────────────────────── */
+
+  useEffect(() => {
+    if (!initialState) return;
+
+    // Normalize both sides (dedupe + sort) before comparing
+    const savedPaths = Array.from(new Set(initialState.paths || [])).sort(
+      (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }),
+    );
+    const currentPaths = Array.from(new Set(cards.map((c) => c.path))).sort(
+      (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }),
+    );
+
+    const pathsMatch =
+      savedPaths.length === currentPaths.length &&
+      savedPaths.every((p, i) => p === currentPaths[i]);
+
+    if (!pathsMatch) {
+      console.warn(
+        "initialState paths do not match current upload; skipping auto-restore",
+      );
+      return;
+    }
+
+    restoreFromObject(initialState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialState]);
+
   // ── Handle user changing the scope dropdown ──
   function onScopeChange(e) {
     const newScope = e.target.value;
     setScope(newScope);
 
-    // Filter cardsForSession based on new scope
     let subset;
     if (newScope === SCOPE_ALL) {
       subset = cards;
@@ -89,9 +133,9 @@ export default function StudyFlashcards({ cards, onReset }) {
     } else {
       subset = [];
     }
-    setCardsForSession(subset);
 
-    // Reset session state for this subset
+    // Full reset to that subset
+    setCardsForSession(subset);
     const ids = subset.map((c) => c.id);
     setOriginalOrder(ids);
     setCurrentOrder(ids);
@@ -104,7 +148,7 @@ export default function StudyFlashcards({ cards, onReset }) {
     setShowSettings(false);
   }
 
-  // ── If no cards in this subset (and not finished), show fallback ──
+  // ── “no cards” guard ──
   if (cardsForSession.length === 0 && !finished) {
     return (
       <div className="w-full max-w-5xl text-center text-gray-200">
@@ -121,7 +165,7 @@ export default function StudyFlashcards({ cards, onReset }) {
     );
   }
 
-  // ── If finished, show summary ──
+  // ── Completed view ──
   if (finished) {
     const total = cardsForSession.length;
     const wrongCount = incorrectIds.size;
@@ -199,7 +243,7 @@ export default function StudyFlashcards({ cards, onReset }) {
         </select>
       </div>
 
-      {/* ── Row 2: Stats / Settings / Save/Restore/Clear ── */}
+      {/* ── Row 2: Stats / Settings / Export/Import ── */}
       <div className="flex justify-between items-center text-gray-300 mb-2 px-4">
         {/* Left side: Still Learning / Studied / Know / Settings */}
         <div className="flex space-x-6">
@@ -216,31 +260,24 @@ export default function StudyFlashcards({ cards, onReset }) {
           </button>
         </div>
 
-        {/* Right side: Save / Restore / Clear State */}
-        <div className="flex space-x-2">
+        {/* Right side: Export / Import state.json */}
+        <div className="flex space-x-2 items-center">
           <button
             className="px-3 py-1 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm"
-            onClick={saveState}
+            onClick={exportState}
           >
-            💾 Save State
+            💾 Export State
           </button>
 
-          <button
-            className="px-3 py-1 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 text-sm"
-            onClick={restoreState}
-          >
-            🔄 Restore State
-          </button>
-
-          <button
-            className="px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
-            onClick={() => {
-              localStorage.removeItem("flashcardsSave");
-              alert("Saved state cleared.");
-            }}
-          >
-            🗑️ Clear State
-          </button>
+          <label className="px-3 py-1 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 text-sm cursor-pointer">
+            <input
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={importStateFromFile}
+            />
+            🔄 Import State
+          </label>
         </div>
       </div>
 
@@ -341,7 +378,6 @@ export default function StudyFlashcards({ cards, onReset }) {
   );
 
   // ── Helper Functions ──
-
   function undoCard() {
     if (currentIndex > 0) {
       const prevIndex = currentIndex - 1;
@@ -360,7 +396,7 @@ export default function StudyFlashcards({ cards, onReset }) {
   function markWrong() {
     setIncorrectIds((prev) => {
       const nxt = new Set(prev);
-      nxt.add(currentCard.id);
+      nxt.add(currentOrder[currentIndex]);
       return nxt;
     });
     advanceOrFinish();
@@ -399,12 +435,8 @@ export default function StudyFlashcards({ cards, onReset }) {
     if (wrongIds.length === 0) return;
 
     isRestoringRef.current = true;
-
-    // Build a new subset array of card objects
     const wrongCards = cards.filter((c) => wrongIds.includes(c.id));
     setCardsForSession(wrongCards);
-
-    // Reset all session state for this subset
     setOriginalOrder(wrongIds);
     setCurrentOrder(wrongIds);
     setIsShuffled(false);
@@ -414,16 +446,13 @@ export default function StudyFlashcards({ cards, onReset }) {
     setFinished(false);
     setFrontFirst(true);
     setShowSettings(false);
-
     isRestoringRef.current = false;
   }
 
   function restartFullDeck() {
     isRestoringRef.current = true;
-
     setScope(SCOPE_ALL);
     setCardsForSession(cards);
-
     const ids = cards.map((c) => c.id);
     setOriginalOrder(ids);
     setCurrentOrder(ids);
@@ -434,13 +463,26 @@ export default function StudyFlashcards({ cards, onReset }) {
     setFinished(false);
     setFrontFirst(true);
     setShowSettings(false);
-
     isRestoringRef.current = false;
   }
 
-  function saveState() {
-    const toSave = {
-      paths: cards.map((c) => c.path),
+  /* ────────────────────────────────────────────────────────── */
+  /* Export / Import state.json                                 */
+  /* ────────────────────────────────────────────────────────── */
+
+  /* ────────────────────────────────────────────────────────── */
+  /* Export the current session as state.json                   */
+  /* NOTE: `paths` must be a UNIQUE, SORTED list of CSV paths   */
+  /* so the landing page checklist isn't full of duplicates.    */
+  /* ────────────────────────────────────────────────────────── */
+  function buildStateObject() {
+    // Dedup + sort the CSV paths used to build this deck
+    const pathsUnique = Array.from(new Set(cards.map((c) => c.path))).sort(
+      (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }),
+    );
+
+    return {
+      paths: pathsUnique, // ✅ fixed
       sessionIds: cardsForSession.map((c) => c.id),
       originalOrder,
       currentOrder,
@@ -452,59 +494,88 @@ export default function StudyFlashcards({ cards, onReset }) {
       fontSizeInput,
       finished,
     };
-    localStorage.setItem("flashcardsSave", JSON.stringify(toSave));
-    alert("Progress saved!");
   }
 
-  function restoreState() {
-    const saved = localStorage.getItem("flashcardsSave");
-    if (!saved) {
-      alert("No saved state found.");
-      return;
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(saved);
-    } catch {
-      alert("Saved state is corrupted.");
-      return;
-    }
-    // Check that the paths match exactly
-    const savedPaths = parsed.paths || [];
-    const currentPaths = cards.map((c) => c.path);
-    const pathsMatch =
-      savedPaths.length === currentPaths.length &&
-      savedPaths.every((p, i) => p === currentPaths[i]);
-    if (!pathsMatch) {
-      alert(
-        "Saved state does not match the currently uploaded files. Please upload the same files to restore."
-      );
-      return;
-    }
+  function exportState() {
+    const toSave = buildStateObject();
+    const blob = new Blob([JSON.stringify(toSave, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "state.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
 
+  async function importStateFromFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+
+      // Normalize: dedupe + sort on BOTH sides
+      const savedPaths = Array.from(new Set(parsed.paths || [])).sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: "base" }),
+      );
+      const currentPaths = Array.from(new Set(cards.map((c) => c.path))).sort(
+        (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }),
+      );
+
+      const pathsMatch =
+        savedPaths.length === currentPaths.length &&
+        savedPaths.every((p, i) => p === currentPaths[i]);
+
+      if (!pathsMatch) {
+        alert(
+          "This state.json does not match the currently uploaded files.\nUpload the same CSV set and try again.",
+        );
+        return;
+      }
+
+      restoreFromObject(parsed);
+      alert("State imported!");
+    } catch {
+      alert("Failed to parse state.json.");
+    } finally {
+      e.target.value = "";
+    }
+  }
+
+  function restoreFromObject(parsed) {
     isRestoringRef.current = true;
 
-    // 1. Restore scope
-    setScope(parsed.scope || SCOPE_ALL);
+    // 1. Scope & subset
+    const nextScope = parsed.scope ?? SCOPE_ALL;
+    setScope(nextScope);
 
-    // 2. Rebuild cardsForSession from parsed.sessionIds
-    const subset = cards.filter((c) => parsed.sessionIds.includes(c.id));
+    const subset = cards.filter((c) =>
+      (parsed.sessionIds || []).includes(c.id),
+    );
     setCardsForSession(subset);
 
-    // 3. Restore deck and session flags
-    setOriginalOrder(parsed.originalOrder || parsed.sessionIds);
-    setCurrentOrder(parsed.currentOrder || parsed.sessionIds);
+    // 2. Deck + flags
+    setOriginalOrder(
+      parsed.originalOrder || parsed.sessionIds || subset.map((c) => c.id),
+    );
+    setCurrentOrder(
+      parsed.currentOrder || parsed.sessionIds || subset.map((c) => c.id),
+    );
     setCurrentIndex(parsed.currentIndex ?? 0);
     setIncorrectIds(new Set(parsed.incorrectIds || []));
     setIsShuffled(parsed.isShuffled ?? false);
     setFinished(parsed.finished ?? false);
 
-    // 4. Restore settings
+    // 3. Settings
     setFrontFirst(parsed.frontFirst ?? true);
     setFontSizeInput(parsed.fontSizeInput || "30");
     setShowSettings(false);
 
     isRestoringRef.current = false;
-    alert("Progress restored!");
   }
 }

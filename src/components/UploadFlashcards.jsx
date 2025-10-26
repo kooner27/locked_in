@@ -1,8 +1,21 @@
 /* eslint-disable react/prop-types */
 import React, { useState } from "react";
 
-export default function UploadFlashcards({ onUpload }) {
+/* ────────────────────────────────────────────────────────── */
+/* 0. New: state.json import + required-files checklist       */
+/*    - “Import state.json” lets you load a previously saved  */
+/*      session state BEFORE uploading CSVs.                  */
+/*    - After import, we display the required CSV paths and   */
+/*      validate that your next upload matches exactly.       */
+/* ────────────────────────────────────────────────────────── */
+
+export default function UploadFlashcards({
+  onUpload,
+  onStateImported,
+  expectedPaths = [],
+}) {
   const [error, setError] = useState("");
+  const [importStatus, setImportStatus] = useState("");
 
   /* ────────────────────────────────────────────────────────── */
   /* 1. splitCSVLine(line) → [field1, field2, …]               */
@@ -77,9 +90,12 @@ export default function UploadFlashcards({ onUpload }) {
 
   /* ────────────────────────────────────────────────────────── */
   /* 3. handleFiles(e): read each selected file, parse, upload */
+  /*    New: if a state.json has been imported, we verify the  */
+  /*    uploaded CSV paths exactly match the required list.     */
   /* ────────────────────────────────────────────────────────── */
   async function handleFiles(e) {
     setError("");
+    setImportStatus("");
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
 
@@ -110,12 +126,14 @@ export default function UploadFlashcards({ onUpload }) {
             reader.onerror = () =>
               reject(
                 new Error(
-                  `Failed to read “${file.name}”: ${reader.error?.message || ""}`
-                )
+                  `Failed to read “${file.name}”: ${
+                    reader.error?.message || ""
+                  }`,
+                ),
               );
             reader.readAsText(file);
           });
-        })
+        }),
       );
 
       // 4) Flatten
@@ -123,7 +141,7 @@ export default function UploadFlashcards({ onUpload }) {
 
       if (!allCards.length) {
         setError(
-          "All CSVs were empty or did not follow “term,definition” per line."
+          "All CSVs were empty or did not follow “term,definition” per line.",
         );
         return;
       }
@@ -138,6 +156,27 @@ export default function UploadFlashcards({ onUpload }) {
         });
       });
 
+      // 5b) NEW: If we imported state.json earlier, verify exact path match.
+      if (expectedPaths.length > 0) {
+        const uploadedPaths = Array.from(
+          new Set(allCards.map((c) => c.path)),
+        ).sort();
+        const required = expectedPaths.slice().sort();
+        const missing = required.filter((p) => !uploadedPaths.includes(p));
+        const extra = uploadedPaths.filter((p) => !required.includes(p));
+        if (missing.length || extra.length) {
+          setError(
+            [
+              missing.length ? `Missing: ${missing.join(", ")}` : null,
+              extra.length ? `Extra: ${extra.join(", ")}` : null,
+            ]
+              .filter(Boolean)
+              .join(" | "),
+          );
+          return;
+        }
+      }
+
       // 6) Hand off to StudyFlashcards
       onUpload(allCards);
     } catch (err) {
@@ -145,14 +184,58 @@ export default function UploadFlashcards({ onUpload }) {
       setError(
         err instanceof Error
           ? err.message
-          : "An unknown error occurred while reading CSV files."
+          : "An unknown error occurred while reading CSV files.",
       );
+    }
+  }
+
+  /* ────────────────────────────────────────────────────────── */
+  /* 0b. New: handle state.json import                          */
+  /*     - Minimal validation: require a non-empty `paths` arr. */
+  /*     - Bubble parsed object to parent via onStateImported.  */
+  /* ────────────────────────────────────────────────────────── */
+  async function handleStateImport(e) {
+    setError("");
+    setImportStatus("");
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith(".json")) {
+      setError("Please select a .json file.");
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+
+      if (
+        !parsed ||
+        !Array.isArray(parsed.paths) ||
+        parsed.paths.length === 0
+      ) {
+        setError("Invalid state.json: missing ‘paths’ array.");
+        return;
+      }
+
+      onStateImported?.(parsed);
+      setImportStatus(
+        "State imported. Now upload the required CSV files listed below.",
+      );
+    } catch (err) {
+      console.error(err);
+      setError("Failed to parse state.json.");
+    } finally {
+      // Allow re-selecting the same file
+      e.target.value = "";
     }
   }
 
   /* ────────────────────────────────────────────────────────── */
   /* 4. UI                                                     */
   /* ────────────────────────────────────────────────────────── */
+  const hasExpected = expectedPaths && expectedPaths.length > 0;
+
   return (
     <div className="w-full max-w-2xl">
       <div className="bg-gray-800 p-8 rounded-xl shadow-xl">
@@ -161,14 +244,24 @@ export default function UploadFlashcards({ onUpload }) {
         </h1>
 
         <p className="text-gray-400 mb-4 text-center">
-          You can upload either:
-          <br />• One or more <strong>individual CSV files</strong> (use “Select
-          File(s)”), or
-          <br />• An entire <strong>folder</strong> of CSVs (nested subfolders
-          allowed).
+          Upload CSVs to start studying, or <strong>import a state.json</strong>{" "}
+          to resume a previous session.
         </p>
 
-        <div className="flex justify-center space-x-4">
+        <div className="flex justify-center gap-4 flex-wrap mb-2">
+          {/* New: Import state.json */}
+          <label className="relative cursor-pointer">
+            <input
+              type="file"
+              accept="application/json,.json"
+              className="absolute inset-0 opacity-0 cursor-pointer"
+              onChange={handleStateImport}
+            />
+            <span className="inline-block w-48 text-center px-6 py-3 bg-amber-600 hover:bg-amber-700 text-white font-medium rounded-lg">
+              Import state.json
+            </span>
+          </label>
+
           {/* Select File(s) */}
           <label className="relative cursor-pointer">
             <input
@@ -178,7 +271,7 @@ export default function UploadFlashcards({ onUpload }) {
               className="absolute inset-0 opacity-0 cursor-pointer"
               onChange={handleFiles}
             />
-            <span className="inline-block px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg">
+            <span className="inline-block w-48 text-center px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg">
               Select File(s)
             </span>
           </label>
@@ -193,14 +286,37 @@ export default function UploadFlashcards({ onUpload }) {
               className="absolute inset-0 opacity-0 cursor-pointer"
               onChange={handleFiles}
             />
-            <span className="inline-block px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg">
+            <span className="inline-block w-48 text-center px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg">
               Select Folder
             </span>
           </label>
         </div>
 
+        {importStatus && (
+          <p className="text-emerald-400 text-sm text-center">{importStatus}</p>
+        )}
         {error && (
-          <p className="text-red-500 text-sm mt-4 text-center">{error}</p>
+          <p className="text-red-500 text-sm mt-2 text-center">{error}</p>
+        )}
+
+        {/* New: Required files list (after importing state.json) */}
+        {hasExpected && (
+          <div className="bg-gray-900 p-4 rounded-lg mt-4">
+            <h3 className="text-gray-100 font-semibold mb-2">
+              Required CSV files
+            </h3>
+            <p className="text-gray-400 text-sm mb-2">
+              Upload exactly these paths (names and folder structure must
+              match):
+            </p>
+            <ul className="list-disc list-inside text-gray-300 text-sm max-h-48 overflow-auto">
+              {expectedPaths.map((p) => (
+                <li key={p}>
+                  <code>{p}</code>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
 
         <p className="text-gray-500 text-sm mt-6 text-center">
