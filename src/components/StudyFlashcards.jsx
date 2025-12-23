@@ -147,6 +147,138 @@ export default function StudyFlashcards({
     setFrontFirst(true);
     setShowSettings(false);
   }
+  // keyboard shortcuts
+  // --- Keyboard shortcuts (Space=flip, S=wrong, D=correct, A=undo, Q=shuffle) ---
+
+  // Keep latest values in refs so the key handler never goes stale
+  const currentIndexRef = useRef(currentIndex);
+  const currentOrderRef = useRef(currentOrder);
+  const cardsForSessionRef = useRef(cardsForSession);
+
+  useEffect(() => {
+    currentIndexRef.current = currentIndex;
+  }, [currentIndex]);
+
+  useEffect(() => {
+    currentOrderRef.current = currentOrder;
+  }, [currentOrder]);
+
+  useEffect(() => {
+    cardsForSessionRef.current = cardsForSession;
+  }, [cardsForSession]);
+
+  useEffect(() => {
+    function onKeyDown(e) {
+      const el = document.activeElement;
+
+      // Ignore typing in text inputs; BUT do NOT ignore BUTTON (that breaks shortcuts after clicking)
+      if (
+        el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.tagName === "SELECT" ||
+          el.isContentEditable)
+      ) {
+        return;
+      }
+
+      // prevent key-repeat from spamming actions if you hold a key
+      if (e.repeat) return;
+
+      switch (e.code) {
+        case "Space": {
+          e.preventDefault();
+          setShowBack((s) => !s);
+          return;
+        }
+
+        case "KeyS": {
+          e.preventDefault();
+          // Mark wrong using refs (correct card even after index changes)
+          const idx = currentIndexRef.current;
+          const order = currentOrderRef.current;
+          const cardId = order[idx];
+
+          setIncorrectIds((prev) => {
+            const nxt = new Set(prev);
+            nxt.add(cardId);
+            return nxt;
+          });
+
+          // advance using refs so we don’t rely on stale currentIndex
+          const total = cardsForSessionRef.current.length;
+          if (idx < total - 1) {
+            setCurrentIndex(idx + 1);
+            setShowBack(false);
+          } else {
+            setFinished(true);
+          }
+          return;
+        }
+
+        case "KeyD": {
+          e.preventDefault();
+          const idx = currentIndexRef.current;
+          const total = cardsForSessionRef.current.length;
+
+          if (idx < total - 1) {
+            setCurrentIndex(idx + 1);
+            setShowBack(false);
+          } else {
+            setFinished(true);
+          }
+          return;
+        }
+
+        case "KeyA": {
+          e.preventDefault();
+          const idx = currentIndexRef.current;
+          if (idx <= 0) return;
+
+          const prevIndex = idx - 1;
+          const prevCardId = currentOrderRef.current[prevIndex];
+
+          setCurrentIndex(prevIndex);
+          setShowBack(false);
+          setIncorrectIds((prev) => {
+            const nxt = new Set(prev);
+            nxt.delete(prevCardId);
+            return nxt;
+          });
+          setFinished(false);
+          return;
+        }
+
+        case "KeyQ": {
+          e.preventDefault();
+          setIsShuffled((prev) => {
+            if (!prev) {
+              const shuffled = shuffleArray(
+                cardsForSessionRef.current.map((c) => c.id),
+              );
+              setCurrentOrder(shuffled);
+            } else {
+              setCurrentOrder(cardsForSessionRef.current.map((c) => c.id));
+            }
+            setCurrentIndex(0);
+            setShowBack(false);
+            return !prev;
+          });
+          return;
+        }
+
+        case "Escape":
+          setShowSettings(false);
+          return;
+
+        default:
+          return;
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // ── “no cards” guard ──
   if (cardsForSession.length === 0 && !finished) {
