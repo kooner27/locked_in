@@ -1,0 +1,27 @@
+{
+  "cards": [
+    {
+      "front": "What is the powerhouse of the cell?",
+      "back": "Mitochondria"
+    },
+    {
+      "front": [
+        { "type": "text", "text": "Name this structure:" },
+        {
+          "type": "image",
+          "src": "images/cell-diagram.png",
+          "alt": "Cell diagram",
+          "width": "70%"
+        }
+      ],
+      "back": [
+        { "type": "text", "text": "Mitochondrion" },
+        {
+          "type": "image",
+          "src": "images/mitochondria.avif",
+          "alt": "Mitochondrion close-up"
+        }
+      ]
+    }
+  ]
+}

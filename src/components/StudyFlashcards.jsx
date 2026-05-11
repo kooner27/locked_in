@@ -15,6 +15,56 @@ function shuffleArray(arr) {
   return a;
 }
 
+function getSideContent(card, side) {
+  const content = side === "front" ? card.frontContent : card.backContent;
+  if (Array.isArray(content) && content.length) return content;
+
+  const text = side === "front" ? card.front : card.back;
+  return text ? [{ type: "text", text }] : [];
+}
+
+function getImageStyle(width) {
+  if (!width) return undefined;
+  return { width, maxWidth: "100%" };
+}
+
+function CardSide({ blocks, fontSizePx }) {
+  return (
+    <div className="flex max-w-full flex-col items-center justify-center gap-5">
+      {blocks.map((block, idx) => {
+        if (block.type === "image") {
+          return block.src ? (
+            <img
+              key={`${block.source || block.src}__${idx}`}
+              src={block.src}
+              alt={block.alt || ""}
+              className="max-h-[42vh] max-w-full rounded-lg object-contain"
+              style={getImageStyle(block.width)}
+            />
+          ) : (
+            <span
+              key={`${block.source || "missing"}__${idx}`}
+              className="max-w-full rounded-lg border border-red-400/50 bg-red-950/40 px-4 py-3 text-base text-red-100"
+            >
+              Image not found: {block.source}
+            </span>
+          );
+        }
+
+        return (
+          <span
+            key={`${block.text || "text"}__${idx}`}
+            className="max-w-full whitespace-pre-wrap break-words"
+            style={{ fontSize: `${fontSizePx}px` }}
+          >
+            {block.text}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ────────────────────────────────────────────────────────── */
 /* New in this file:                                          */
 /* - Replace localStorage “Save/Restore/Clear” with:           */
@@ -47,6 +97,7 @@ export default function StudyFlashcards({
   // ── Settings ──
   const [frontFirst, setFrontFirst] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [showScopePicker, setShowScopePicker] = useState(false);
   const [fontSizeInput, setFontSizeInput] = useState("30"); // px
 
   // ── Scope dropdown: "__ALL_CARDS__", folder prefix, or file path ──
@@ -83,6 +134,7 @@ export default function StudyFlashcards({
     setFinished(false);
     setFrontFirst(true);
     setShowSettings(false);
+    setShowScopePicker(false);
     setScope(SCOPE_ALL);
     // keep fontSizeInput as-is
   }, [cards]);
@@ -97,10 +149,10 @@ export default function StudyFlashcards({
 
     // Normalize both sides (dedupe + sort) before comparing
     const savedPaths = Array.from(new Set(initialState.paths || [])).sort(
-      (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }),
+      (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })
     );
     const currentPaths = Array.from(new Set(cards.map((c) => c.path))).sort(
-      (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }),
+      (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })
     );
 
     const pathsMatch =
@@ -109,7 +161,7 @@ export default function StudyFlashcards({
 
     if (!pathsMatch) {
       console.warn(
-        "initialState paths do not match current upload; skipping auto-restore",
+        "initialState paths do not match current upload; skipping auto-restore"
       );
       return;
     }
@@ -122,6 +174,7 @@ export default function StudyFlashcards({
   function onScopeChange(e) {
     const newScope = e.target.value;
     setScope(newScope);
+    setShowScopePicker(false);
 
     let subset;
     if (newScope === SCOPE_ALL) {
@@ -254,7 +307,7 @@ export default function StudyFlashcards({
           setIsShuffled((prev) => {
             if (!prev) {
               const shuffled = shuffleArray(
-                cardsForSessionRef.current.map((c) => c.id),
+                cardsForSessionRef.current.map((c) => c.id)
               );
               setCurrentOrder(shuffled);
             } else {
@@ -269,6 +322,7 @@ export default function StudyFlashcards({
 
         case "Escape":
           setShowSettings(false);
+          setShowScopePicker(false);
           return;
 
         default:
@@ -350,35 +404,23 @@ export default function StudyFlashcards({
 
   // ── Compute whether to show front or back ──
   const showFront = frontFirst !== showBack;
+  const visibleContent = getSideContent(
+    currentCard,
+    showFront ? "front" : "back"
+  );
+  const scopeLabel =
+    scope === SCOPE_ALL
+      ? "All Cards"
+      : uniqueFolders.includes(scope)
+        ? `${scope}/`
+        : scope;
 
   return (
     <div className="w-full max-w-5xl space-y-6 relative">
-      {/* ── Row 1: Study scope dropdown ── */}
-      <div className="bg-gray-800 p-4 rounded-t-xl flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-4 sm:space-y-0">
-        <div className="text-gray-200 font-medium">Study scope:</div>
-        <select
-          className="bg-gray-700 text-gray-100 px-3 py-2 rounded-lg focus:outline-none"
-          value={scope}
-          onChange={onScopeChange}
-        >
-          <option value={SCOPE_ALL}>All Cards</option>
-          {uniqueFolders.map((folder) => (
-            <option key={`FOLDER__${folder}`} value={folder}>
-              Folder: {folder}/
-            </option>
-          ))}
-          {uniqueFiles.map((file) => (
-            <option key={`FILE__${file}`} value={file}>
-              File: {file}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* ── Row 2: Stats / Settings / Export/Import ── */}
-      <div className="flex justify-between items-center text-gray-300 mb-2 px-4">
+      {/* ── Stats / Scope / Settings / Export/Import ── */}
+      <div className="flex flex-wrap justify-between items-center gap-3 text-gray-300 mb-2 px-4">
         {/* Left side: Still Learning / Studied / Know / Settings */}
-        <div className="flex space-x-6">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
           <span>Still Learning: {wrongCount}</span>
           <span>
             Studied: {answeredCount} / {total}
@@ -386,10 +428,52 @@ export default function StudyFlashcards({
           <span>Know: {correctCount}</span>
           <button
             className="text-gray-400 hover:text-gray-200"
-            onClick={() => setShowSettings((s) => !s)}
+            onClick={() => {
+              setShowSettings((s) => !s);
+              setShowScopePicker(false);
+            }}
+            title="Settings"
           >
             ⚙️
           </button>
+        </div>
+
+        <div className="relative">
+          <button
+            className="max-w-[15rem] truncate rounded-lg bg-gray-800 px-3 py-1 text-sm text-gray-100 hover:bg-gray-700"
+            onClick={() => {
+              setShowScopePicker((s) => !s);
+              setShowSettings(false);
+            }}
+            title={`Study scope: ${scopeLabel}`}
+          >
+            Scope: {scopeLabel}
+          </button>
+
+          {showScopePicker && (
+            <div className="absolute left-1/2 top-9 z-10 w-80 -translate-x-1/2 rounded-xl bg-gray-800 p-4 text-gray-100 shadow-xl">
+              <label className="mb-2 block text-sm font-medium text-gray-300">
+                Study scope
+              </label>
+              <select
+                className="w-full bg-gray-700 text-gray-100 px-3 py-2 rounded-lg focus:outline-none"
+                value={scope}
+                onChange={onScopeChange}
+              >
+                <option value={SCOPE_ALL}>All Cards</option>
+                {uniqueFolders.map((folder) => (
+                  <option key={`FOLDER__${folder}`} value={folder}>
+                    Folder: {folder}/
+                  </option>
+                ))}
+                {uniqueFiles.map((file) => (
+                  <option key={`FILE__${file}`} value={file}>
+                    File: {file}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         {/* Right side: Export / Import state.json */}
@@ -464,9 +548,7 @@ export default function StudyFlashcards({
           className="w-[95vw] max-w-5xl h-[70vh] bg-gray-700 p-8 rounded-xl text-center flex items-center justify-center select-none cursor-pointer text-gray-100 overflow-auto"
           onClick={() => setShowBack((s) => !s)}
         >
-          <span style={{ fontSize: `${fontSizePx}px` }}>
-            {showFront ? currentCard.front : currentCard.back}
-          </span>
+          <CardSide blocks={visibleContent} fontSizePx={fontSizePx} />
         </div>
       </div>
 
@@ -578,6 +660,7 @@ export default function StudyFlashcards({
     setFinished(false);
     setFrontFirst(true);
     setShowSettings(false);
+    setShowScopePicker(false);
     isRestoringRef.current = false;
   }
 
@@ -595,6 +678,7 @@ export default function StudyFlashcards({
     setFinished(false);
     setFrontFirst(true);
     setShowSettings(false);
+    setShowScopePicker(false);
     isRestoringRef.current = false;
   }
 
@@ -610,7 +694,7 @@ export default function StudyFlashcards({
   function buildStateObject() {
     // Dedup + sort the CSV paths used to build this deck
     const pathsUnique = Array.from(new Set(cards.map((c) => c.path))).sort(
-      (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }),
+      (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })
     );
 
     return {
@@ -653,10 +737,10 @@ export default function StudyFlashcards({
 
       // Normalize: dedupe + sort on BOTH sides
       const savedPaths = Array.from(new Set(parsed.paths || [])).sort((a, b) =>
-        a.localeCompare(b, undefined, { sensitivity: "base" }),
+        a.localeCompare(b, undefined, { sensitivity: "base" })
       );
       const currentPaths = Array.from(new Set(cards.map((c) => c.path))).sort(
-        (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }),
+        (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })
       );
 
       const pathsMatch =
@@ -665,7 +749,7 @@ export default function StudyFlashcards({
 
       if (!pathsMatch) {
         alert(
-          "This state.json does not match the currently uploaded files.\nUpload the same CSV set and try again.",
+          "This state.json does not match the currently uploaded files.\nUpload the same CSV set and try again."
         );
         return;
       }
@@ -687,16 +771,16 @@ export default function StudyFlashcards({
     setScope(nextScope);
 
     const subset = cards.filter((c) =>
-      (parsed.sessionIds || []).includes(c.id),
+      (parsed.sessionIds || []).includes(c.id)
     );
     setCardsForSession(subset);
 
     // 2. Deck + flags
     setOriginalOrder(
-      parsed.originalOrder || parsed.sessionIds || subset.map((c) => c.id),
+      parsed.originalOrder || parsed.sessionIds || subset.map((c) => c.id)
     );
     setCurrentOrder(
-      parsed.currentOrder || parsed.sessionIds || subset.map((c) => c.id),
+      parsed.currentOrder || parsed.sessionIds || subset.map((c) => c.id)
     );
     setCurrentIndex(parsed.currentIndex ?? 0);
     setIncorrectIds(new Set(parsed.incorrectIds || []));
@@ -707,6 +791,7 @@ export default function StudyFlashcards({
     setFrontFirst(parsed.frontFirst ?? true);
     setFontSizeInput(parsed.fontSizeInput || "30");
     setShowSettings(false);
+    setShowScopePicker(false);
 
     isRestoringRef.current = false;
   }

@@ -1,13 +1,7 @@
-/* eslint-disable react/prop-types */
 import React, { useState } from "react";
 
-/* ────────────────────────────────────────────────────────── */
-/* 0. New: state.json import + required-files checklist       */
-/*    - “Import state.json” lets you load a previously saved  */
-/*      session state BEFORE uploading CSVs.                  */
-/*    - After import, we display the required CSV paths and   */
-/*      validate that your next upload matches exactly.       */
-/* ────────────────────────────────────────────────────────── */
+const IMAGE_FILE_RE = /\.(avif|bmp|gif|jpe?g|png|svg|webp)$/i;
+const REMOTE_OR_EMBEDDED_RE = /^(https?:|data:image\/|blob:)/i;
 
 export default function UploadFlashcards({
   onUpload,
@@ -16,6 +10,153 @@ export default function UploadFlashcards({
 }) {
   const [error, setError] = useState("");
   const [importStatus, setImportStatus] = useState("");
+
+  function normalizePath(path) {
+    return path
+      .replace(/\\/g, "/")
+      .split("/")
+      .reduce((parts, part) => {
+        if (!part || part === ".") return parts;
+        if (part === "..") return parts.slice(0, -1);
+        return parts.concat(part);
+      }, [])
+      .join("/");
+  }
+
+  function dirname(path) {
+    const normalized = normalizePath(path);
+    const lastSlash = normalized.lastIndexOf("/");
+    return lastSlash === -1 ? "" : normalized.slice(0, lastSlash);
+  }
+
+  function buildAssetMap(files) {
+    const byPath = new Map();
+    const byLowerPath = new Map();
+    const byName = new Map();
+    const nameCounts = new Map();
+
+    files
+      .filter((file) => IMAGE_FILE_RE.test(file.name))
+      .forEach((file) => {
+        const path = normalizePath(file.webkitRelativePath || file.name);
+        const url = URL.createObjectURL(file);
+        const name = file.name.toLowerCase();
+
+        byPath.set(path, url);
+        byLowerPath.set(path.toLowerCase(), url);
+        nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+        byName.set(name, url);
+      });
+
+    return { byPath, byLowerPath, byName, nameCounts };
+  }
+
+  function resolveImageSrc(src, basePath, assetMap) {
+    if (!src || typeof src !== "string") {
+      return { src: "", assetPath: "" };
+    }
+
+    const trimmed = src.trim();
+    if (REMOTE_OR_EMBEDDED_RE.test(trimmed)) {
+      return { src: trimmed, assetPath: "" };
+    }
+
+    const candidates = [
+      normalizePath(trimmed),
+      normalizePath(`${dirname(basePath)}/${trimmed}`),
+    ];
+
+    for (const candidate of candidates) {
+      const direct = assetMap.byPath.get(candidate);
+      if (direct) return { src: direct, assetPath: candidate };
+
+      const lower = assetMap.byLowerPath.get(candidate.toLowerCase());
+      if (lower) return { src: lower, assetPath: candidate };
+    }
+
+    const fileName = normalizePath(trimmed).split("/").pop().toLowerCase();
+    if (assetMap.nameCounts.get(fileName) === 1) {
+      return { src: assetMap.byName.get(fileName), assetPath: fileName };
+    }
+
+    return { src: "", assetPath: "" };
+  }
+
+  function normalizeTextBlock(text) {
+    const value = typeof text === "string" ? text.trim() : "";
+    return value ? [{ type: "text", text: value }] : [];
+  }
+
+  function normalizeImageWidth(width) {
+    if (typeof width === "number" && width > 0) return width;
+    if (typeof width !== "string") return undefined;
+
+    const value = width.trim();
+    return value ? value : undefined;
+  }
+
+  function normalizeImageBlock(block, basePath, assetMap) {
+    const rawSrc = block.src || block.url || block.image;
+    const resolved = resolveImageSrc(rawSrc, basePath, assetMap);
+
+    if (!rawSrc) return [];
+
+    return [
+      {
+        type: "image",
+        src: resolved.src,
+        source: rawSrc,
+        assetPath: resolved.assetPath,
+        alt: block.alt || block.caption || "",
+        width: normalizeImageWidth(block.width),
+      },
+    ];
+  }
+
+  function normalizeSide(value, basePath, assetMap) {
+    if (typeof value === "string") {
+      return normalizeTextBlock(value);
+    }
+
+    if (Array.isArray(value)) {
+      return value.flatMap((item) => normalizeSide(item, basePath, assetMap));
+    }
+
+    if (!value || typeof value !== "object") {
+      return [];
+    }
+
+    if (Array.isArray(value.blocks)) {
+      return normalizeSide(value.blocks, basePath, assetMap);
+    }
+
+    const blocks = [];
+    if (value.type === "image" || value.image || value.src || value.url) {
+      blocks.push(...normalizeImageBlock(value, basePath, assetMap));
+    }
+
+    if (value.type === "text" || value.text) {
+      blocks.push(...normalizeTextBlock(value.text));
+    }
+
+    if (value.caption && !value.alt) {
+      blocks.push(...normalizeTextBlock(value.caption));
+    }
+
+    return blocks;
+  }
+
+  function blocksToPlainText(blocks) {
+    return blocks
+      .map((block) => {
+        if (block.type === "text") return block.text;
+        if (block.type === "image")
+          return block.alt || block.source || "[image]";
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
 
   /* ────────────────────────────────────────────────────────── */
   /* 1. splitCSVLine(line) → [field1, field2, …]               */
@@ -83,9 +224,45 @@ export default function UploadFlashcards({
           rowIndex: idx, // original line index
           front,
           back,
+          frontContent: [{ type: "text", text: front }],
+          backContent: [{ type: "text", text: back }],
         };
       })
       .filter(Boolean); // drop null entries
+  }
+
+  function parseDeckJson(text, basePath, assetMap) {
+    const parsed = JSON.parse(text);
+    const rawCards = Array.isArray(parsed) ? parsed : parsed.cards;
+
+    if (!Array.isArray(rawCards)) {
+      throw new Error(
+        `${basePath} is not a deck JSON file. Expected a top-level cards array.`
+      );
+    }
+
+    return rawCards
+      .map((card, idx) => {
+        if (!card || typeof card !== "object") return null;
+
+        const frontValue = card.front ?? card.term ?? card.question;
+        const backValue = card.back ?? card.definition ?? card.answer;
+        const frontContent = normalizeSide(frontValue, basePath, assetMap);
+        const backContent = normalizeSide(backValue, basePath, assetMap);
+
+        if (!frontContent.length || !backContent.length) return null;
+
+        return {
+          id: `${basePath}__${card.id ?? idx}`,
+          path: basePath,
+          rowIndex: idx,
+          front: blocksToPlainText(frontContent),
+          back: blocksToPlainText(backContent),
+          frontContent,
+          backContent,
+        };
+      })
+      .filter(Boolean);
   }
 
   /* ────────────────────────────────────────────────────────── */
@@ -99,41 +276,58 @@ export default function UploadFlashcards({
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
 
-    // 1) Keep only “.csv”
-    let csvFiles = files.filter((f) => f.name.toLowerCase().endsWith(".csv"));
-    if (!csvFiles.length) {
-      setError("No “.csv” files found in your selection.");
+    const assetMap = buildAssetMap(files);
+
+    // 1) Keep deck sources only. state.json is reserved for progress restore.
+    let deckFiles = files.filter((file) => {
+      const lower = file.name.toLowerCase();
+      return (
+        lower.endsWith(".csv") ||
+        (lower.endsWith(".json") && lower !== "state.json")
+      );
+    });
+
+    if (!deckFiles.length) {
+      setError("No .csv or deck .json files found in your selection.");
       return;
     }
 
     // 2) Sort the FileList by alphabetical path (or name)
-    csvFiles.sort((a, b) => {
+    deckFiles.sort((a, b) => {
       const pa = a.webkitRelativePath || a.name;
       const pb = b.webkitRelativePath || b.name;
       return pa.localeCompare(pb, undefined, { sensitivity: "base" });
     });
 
     try {
-      // 3) Read & parse all CSVs IN ORDER
+      // 3) Read & parse all deck files IN ORDER
       const allParsed = await Promise.all(
-        csvFiles.map((file) => {
+        deckFiles.map((file) => {
           return new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = () => {
               const basePath = file.webkitRelativePath || file.name;
-              resolve(parseCsv(reader.result, basePath));
+              try {
+                if (file.name.toLowerCase().endsWith(".json")) {
+                  resolve(parseDeckJson(reader.result, basePath, assetMap));
+                } else {
+                  resolve(parseCsv(reader.result, basePath));
+                }
+              } catch (err) {
+                reject(err);
+              }
             };
             reader.onerror = () =>
               reject(
                 new Error(
                   `Failed to read “${file.name}”: ${
                     reader.error?.message || ""
-                  }`,
-                ),
+                  }`
+                )
               );
             reader.readAsText(file);
           });
-        }),
+        })
       );
 
       // 4) Flatten
@@ -141,7 +335,7 @@ export default function UploadFlashcards({
 
       if (!allCards.length) {
         setError(
-          "All CSVs were empty or did not follow “term,definition” per line.",
+          "No cards found. CSVs need “term,definition” rows; deck JSON needs a cards array."
         );
         return;
       }
@@ -159,7 +353,7 @@ export default function UploadFlashcards({
       // 5b) NEW: If we imported state.json earlier, verify exact path match.
       if (expectedPaths.length > 0) {
         const uploadedPaths = Array.from(
-          new Set(allCards.map((c) => c.path)),
+          new Set(allCards.map((c) => c.path))
         ).sort();
         const required = expectedPaths.slice().sort();
         const missing = required.filter((p) => !uploadedPaths.includes(p));
@@ -171,7 +365,7 @@ export default function UploadFlashcards({
               extra.length ? `Extra: ${extra.join(", ")}` : null,
             ]
               .filter(Boolean)
-              .join(" | "),
+              .join(" | ")
           );
           return;
         }
@@ -184,7 +378,7 @@ export default function UploadFlashcards({
       setError(
         err instanceof Error
           ? err.message
-          : "An unknown error occurred while reading CSV files.",
+          : "An unknown error occurred while reading CSV files."
       );
     }
   }
@@ -220,7 +414,7 @@ export default function UploadFlashcards({
 
       onStateImported?.(parsed);
       setImportStatus(
-        "State imported. Now upload the required CSV files listed below.",
+        "State imported. Now upload the required CSV files listed below."
       );
     } catch (err) {
       console.error(err);
@@ -244,8 +438,8 @@ export default function UploadFlashcards({
         </h1>
 
         <p className="text-gray-400 mb-4 text-center">
-          Upload CSVs to start studying, or <strong>import a state.json</strong>{" "}
-          to resume a previous session.
+          Upload CSV or deck JSON files to start studying, or{" "}
+          <strong>import a state.json</strong> to resume a previous session.
         </p>
 
         <div className="flex justify-center gap-4 flex-wrap mb-2">
@@ -267,7 +461,7 @@ export default function UploadFlashcards({
             <input
               type="file"
               multiple
-              accept=".csv"
+              accept=".csv,.json,image/*"
               className="absolute inset-0 opacity-0 cursor-pointer"
               onChange={handleFiles}
             />
@@ -282,7 +476,7 @@ export default function UploadFlashcards({
               type="file"
               webkitdirectory=""
               multiple
-              accept=".csv"
+              accept=".csv,.json,image/*"
               className="absolute inset-0 opacity-0 cursor-pointer"
               onChange={handleFiles}
             />
@@ -303,7 +497,7 @@ export default function UploadFlashcards({
         {hasExpected && (
           <div className="bg-gray-900 p-4 rounded-lg mt-4">
             <h3 className="text-gray-100 font-semibold mb-2">
-              Required CSV files
+              Required deck files
             </h3>
             <p className="text-gray-400 text-sm mb-2">
               Upload exactly these paths (names and folder structure must
@@ -320,8 +514,8 @@ export default function UploadFlashcards({
         )}
 
         <p className="text-gray-500 text-sm mt-6 text-center">
-          After you select a file or folder, we parse them in perfect
-          alphabetical order and launch study mode.
+          JSON cards can use plain text, images, or mixed blocks. Relative image
+          paths work when you select the image files or their folder too.
         </p>
       </div>
     </div>
